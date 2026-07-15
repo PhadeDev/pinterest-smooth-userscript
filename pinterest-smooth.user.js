@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.0
+// @version      0.1.1
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
 // @match        https://pinterest.com/*
 // @match        https://pinterest.co.uk/*
+// @match        https://*.pinterest.com/*
+// @match        https://*.pinterest.co.uk/*
 // @homepageURL  https://github.com/PhadeDev/pinterest-smooth-userscript
 // @supportURL   https://github.com/PhadeDev/pinterest-smooth-userscript/issues
 // @downloadURL  https://raw.githubusercontent.com/PhadeDev/pinterest-smooth-userscript/main/pinterest-smooth.user.js
