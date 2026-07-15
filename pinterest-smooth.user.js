@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.4
+// @version      0.1.5
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
@@ -29,7 +29,6 @@
   const AD_HIDDEN = `data-${SCRIPT}-ad-hidden`;
   const HIDDEN_REASON = `data-${SCRIPT}-hidden-reason`;
   const USER_PLAY = `data-${SCRIPT}-user-play`;
-  const COPY_READY = `data-${SCRIPT}-copy-ready`;
   const CONTROL_ID = `${SCRIPT}-panel`;
 
   const defaults = {
@@ -50,6 +49,9 @@
   const userIntent = new WeakSet();
   let observer = null;
   let scanTimer = 0;
+  let copyButton = null;
+  let copyImage = null;
+  let hideCopyTimer = 0;
 
   function gmGet(key, fallback) {
     try {
@@ -112,16 +114,11 @@
     }
 
     [${AD_HIDDEN}="true"] {
+      cursor: default !important;
       filter: grayscale(1) !important;
-      max-height: 38px !important;
       opacity: 0.34 !important;
-      overflow: hidden !important;
       pointer-events: none !important;
       position: relative !important;
-    }
-
-    [${AD_HIDDEN}="true"] > * {
-      visibility: hidden !important;
     }
 
     [${AD_HIDDEN}="true"]::before {
@@ -135,11 +132,13 @@
       display: flex;
       font: 700 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       height: 30px;
-      inset: 4px;
+      left: 8px;
       justify-content: center;
       letter-spacing: 0;
       position: absolute;
+      right: 8px;
       text-align: center;
+      top: 8px;
       visibility: visible !important;
       z-index: 2147482000;
     }
@@ -251,25 +250,23 @@
       border-radius: 999px;
       color: #fff;
       cursor: pointer;
-      display: inline-flex;
+      display: none;
       font: 750 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       gap: 5px;
-      left: 10px;
       letter-spacing: 0;
-      opacity: 0;
       padding: 7px 9px;
-      position: absolute;
-      top: 10px;
+      position: fixed;
       transform: translateY(-2px);
       transition: opacity 120ms ease, transform 120ms ease;
-      z-index: 2147482998;
+      z-index: 2147483646;
     }
 
-    .${SCRIPT}-image-wrap:hover .${SCRIPT}-copy-image,
+    .${SCRIPT}-copy-image.${SCRIPT}-visible,
     .${SCRIPT}-copy-image:focus-visible,
     .${SCRIPT}-copy-image.${SCRIPT}-busy,
     .${SCRIPT}-copy-image.${SCRIPT}-ok,
     .${SCRIPT}-copy-image.${SCRIPT}-err {
+      display: inline-flex;
       opacity: 1;
       transform: translateY(0);
     }
@@ -603,15 +600,6 @@
     return true;
   }
 
-  function imageWrapper(img) {
-    return (
-      img.closest('[data-test-id="closeup-body-image-container"]') ||
-      img.closest('[data-grid-item="true"]') ||
-      img.closest("article") ||
-      img.parentElement
-    );
-  }
-
   function toOriginalUrl(url) {
     try {
       const parsed = new URL(url, location.href);
@@ -722,56 +710,87 @@
 
   function buttonStatus(button, text, className = "") {
     button.textContent = text;
-    button.classList.remove(`${SCRIPT}-busy`, `${SCRIPT}-ok`, `${SCRIPT}-err`);
+    button.classList.remove(`${SCRIPT}-busy`, `${SCRIPT}-ok`, `${SCRIPT}-err`, `${SCRIPT}-visible`);
     if (className) button.classList.add(className);
   }
 
-  function ensureImageCopyButton(img) {
-    if (!settings.imageCopyButtons || img.hasAttribute(COPY_READY) || !isPinterestImage(img)) return;
-    const wrapper = imageWrapper(img);
-    if (!wrapper || wrapper.querySelector(`.${SCRIPT}-copy-image`) || wrapper.querySelector("video")) return;
+  function positionCopyButton(img) {
+    if (!copyButton || !img || !settings.imageCopyButtons) return;
+    const rect = img.getBoundingClientRect();
+    if (rect.width < 80 || rect.height < 80) return;
+    copyButton.style.left = `${Math.max(8, rect.left + 8)}px`;
+    copyButton.style.top = `${Math.max(8, rect.top + 8)}px`;
+    copyButton.classList.add(`${SCRIPT}-visible`);
+  }
 
-    wrapper.classList.add(`${SCRIPT}-image-wrap`);
-    wrapper.style.position ||= "relative";
+  function hideCopyButtonSoon(delay = 160) {
+    window.clearTimeout(hideCopyTimer);
+    hideCopyTimer = window.setTimeout(() => {
+      if (!copyButton?.matches(":hover")) {
+        copyButton?.classList.remove(`${SCRIPT}-visible`, `${SCRIPT}-busy`, `${SCRIPT}-ok`, `${SCRIPT}-err`);
+        if (copyButton) copyButton.textContent = "Copy image";
+        copyImage = null;
+      }
+    }, delay);
+  }
 
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `${SCRIPT}-copy-image`;
-    button.textContent = "Copy image";
-    button.title = "Copy full-size image to clipboard";
-    button.setAttribute("aria-label", "Copy full-size image to clipboard");
+  function ensureGlobalCopyButton() {
+    if (!settings.imageCopyButtons || copyButton || !document.body) return;
+    copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = `${SCRIPT}-copy-image`;
+    copyButton.textContent = "Copy image";
+    copyButton.title = "Copy full-size image to clipboard";
+    copyButton.setAttribute("aria-label", "Copy full-size image to clipboard");
 
-    button.addEventListener("click", async (event) => {
+    copyButton.addEventListener("mouseenter", () => window.clearTimeout(hideCopyTimer));
+    copyButton.addEventListener("mouseleave", () => hideCopyButtonSoon(120));
+    copyButton.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      button.disabled = true;
-      buttonStatus(button, "Copying", `${SCRIPT}-busy`);
+      if (!copyImage) return;
+      copyButton.disabled = true;
+      buttonStatus(copyButton, "Copying", `${SCRIPT}-busy`);
       try {
-        const result = await copyImageToClipboard(img);
-        buttonStatus(button, result === "image" ? "Copied" : "Copied URL", `${SCRIPT}-ok`);
+        const result = await copyImageToClipboard(copyImage);
+        buttonStatus(copyButton, result === "image" ? "Copied" : "Copied URL", `${SCRIPT}-ok`);
       } catch (_) {
-        buttonStatus(button, "Failed", `${SCRIPT}-err`);
+        buttonStatus(copyButton, "Failed", `${SCRIPT}-err`);
       } finally {
         window.setTimeout(() => {
-          button.disabled = false;
-          buttonStatus(button, "Copy image");
+          copyButton.disabled = false;
+          buttonStatus(copyButton, "Copy image", `${SCRIPT}-visible`);
         }, 1500);
       }
     }, true);
 
-    wrapper.appendChild(button);
-    img.setAttribute(COPY_READY, "true");
+    document.body.appendChild(copyButton);
+    document.addEventListener("mouseover", (event) => {
+      if (!settings.imageCopyButtons) return;
+      const img = event.target?.closest?.("img");
+      if (!img || !isPinterestImage(img)) return;
+      copyImage = img;
+      window.clearTimeout(hideCopyTimer);
+      positionCopyButton(img);
+    }, true);
+    document.addEventListener("mouseout", (event) => {
+      const img = event.target?.closest?.("img");
+      if (img && img === copyImage) hideCopyButtonSoon();
+    }, true);
+    window.addEventListener("scroll", () => {
+      if (copyImage && copyButton?.classList.contains(`${SCRIPT}-visible`)) positionCopyButton(copyImage);
+    }, { passive: true });
   }
 
   function processImages(root = document) {
     if (!settings.imageCopyButtons) return;
-    if (root.matches?.("img")) ensureImageCopyButton(root);
-    root.querySelectorAll("img").forEach(ensureImageCopyButton);
+    ensureGlobalCopyButton();
   }
 
   function removeImageCopyButtons() {
     document.querySelectorAll(`.${SCRIPT}-copy-image`).forEach((element) => element.remove());
-    document.querySelectorAll(`img[${COPY_READY}]`).forEach((img) => img.removeAttribute(COPY_READY));
+    copyButton = null;
+    copyImage = null;
   }
 
   function cardFor(element) {
@@ -998,11 +1017,20 @@
     });
   }
 
+  function scheduleInit() {
+    const run = () => window.setTimeout(init, 1500);
+    if (document.readyState === "complete") {
+      run();
+    } else {
+      window.addEventListener("load", run, { once: true });
+    }
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init, { once: true });
     patchMediaPlay();
-    startObserver();
+    scheduleInit();
   } else {
-    init();
+    patchMediaPlay();
+    scheduleInit();
   }
 })();
