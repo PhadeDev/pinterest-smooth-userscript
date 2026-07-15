@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.6
+// @version      0.1.7
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
@@ -33,12 +33,12 @@
 
   const defaults = {
     blockAutoplay: true,
-    addVideoControls: true,
-    showVideoBadges: true,
-    imageCopyButtons: true,
-    hidePromoted: true,
-    hideShopping: true,
-    directPinNavigation: true,
+    addVideoControls: false,
+    showVideoBadges: false,
+    imageCopyButtons: false,
+    hidePromoted: false,
+    hideShopping: false,
+    directPinNavigation: false,
     reduceMotion: true,
     compactChrome: false,
     showPanel: true,
@@ -46,6 +46,7 @@
   };
 
   const settings = loadSettings();
+  applyEmergencySafeDefaults(settings);
   const userIntent = new WeakSet();
   let observer = null;
   let scanTimer = 0;
@@ -79,6 +80,15 @@
     return Object.fromEntries(
       Object.entries(defaults).map(([key, value]) => [key, gmGet(key, value)]),
     );
+  }
+
+  function applyEmergencySafeDefaults(target) {
+    if (gmGet("safeDefaultsApplied017", false)) return;
+    ["addVideoControls", "showVideoBadges", "imageCopyButtons", "hidePromoted", "hideShopping", "directPinNavigation"].forEach((key) => {
+      target[key] = false;
+      gmSet(key, false);
+    });
+    gmSet("safeDefaultsApplied017", true);
   }
 
   function saveSetting(key, value) {
