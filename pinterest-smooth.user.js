@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.5
+// @version      0.1.6
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
@@ -115,8 +115,7 @@
 
     [${AD_HIDDEN}="true"] {
       cursor: default !important;
-      filter: grayscale(1) !important;
-      opacity: 0.34 !important;
+      box-shadow: inset 0 0 0 2px rgba(230, 0, 35, 0.55) !important;
       pointer-events: none !important;
       position: relative !important;
     }
@@ -125,18 +124,19 @@
       align-items: center;
       background: rgba(32, 35, 36, 0.92);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 8px;
+      border-radius: 999px;
       box-sizing: border-box;
       color: rgba(255, 255, 255, 0.86);
       content: attr(${HIDDEN_REASON});
-      display: flex;
+      display: inline-flex;
       font: 700 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      height: 30px;
+      height: auto;
       left: 8px;
       justify-content: center;
       letter-spacing: 0;
+      max-width: calc(100% - 16px);
+      padding: 5px 8px;
       position: absolute;
-      right: 8px;
       text-align: center;
       top: 8px;
       visibility: visible !important;
@@ -814,7 +814,8 @@
     const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
     if (!text) return false;
     return /^visit site$/i.test(text) ||
-      /\b(etsy|shop now|buy now|sponsored result|product pin)\b/i.test(text);
+      /^(etsy|shop now|buy now)$/i.test(text) ||
+      /\b(sponsored result|product pin)\b/i.test(text);
   }
 
   function hidePromoted(root = document) {
@@ -840,8 +841,6 @@
       root.querySelectorAll(
         [
           'a[href*="etsy.com" i]',
-          'a[href*="/shop/" i]',
-          'a[href*="shop?" i]',
           '[aria-label="Visit site" i]',
           '[title="Visit site" i]',
         ].join(","),
