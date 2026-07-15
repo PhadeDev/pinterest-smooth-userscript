@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.3
+// @version      0.1.4
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
@@ -18,6 +18,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @grant        GM_setClipboard
 // ==/UserScript==
 
 (() => {
@@ -28,12 +29,14 @@
   const AD_HIDDEN = `data-${SCRIPT}-ad-hidden`;
   const HIDDEN_REASON = `data-${SCRIPT}-hidden-reason`;
   const USER_PLAY = `data-${SCRIPT}-user-play`;
+  const COPY_READY = `data-${SCRIPT}-copy-ready`;
   const CONTROL_ID = `${SCRIPT}-panel`;
 
   const defaults = {
     blockAutoplay: true,
     addVideoControls: true,
     showVideoBadges: true,
+    imageCopyButtons: true,
     hidePromoted: true,
     hideShopping: true,
     directPinNavigation: true,
@@ -83,6 +86,7 @@
     if (key === "hideShopping" && !value) unhidePromoted();
     if (key === "showVideoBadges" && !value) removeVideoBadges();
     if (key === "addVideoControls" && !value) removeVideoControls();
+    if (key === "imageCopyButtons" && !value) removeImageCopyButtons();
     queueScan();
     renderPanel();
   }
@@ -238,6 +242,44 @@
       margin-left: -8px;
       width: 6px;
       background: currentColor;
+    }
+
+    .${SCRIPT}-copy-image {
+      align-items: center;
+      background: rgba(17, 17, 17, 0.76);
+      border: 0;
+      border-radius: 999px;
+      color: #fff;
+      cursor: pointer;
+      display: inline-flex;
+      font: 750 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      gap: 5px;
+      left: 10px;
+      letter-spacing: 0;
+      opacity: 0;
+      padding: 7px 9px;
+      position: absolute;
+      top: 10px;
+      transform: translateY(-2px);
+      transition: opacity 120ms ease, transform 120ms ease;
+      z-index: 2147482998;
+    }
+
+    .${SCRIPT}-image-wrap:hover .${SCRIPT}-copy-image,
+    .${SCRIPT}-copy-image:focus-visible,
+    .${SCRIPT}-copy-image.${SCRIPT}-busy,
+    .${SCRIPT}-copy-image.${SCRIPT}-ok,
+    .${SCRIPT}-copy-image.${SCRIPT}-err {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .${SCRIPT}-copy-image.${SCRIPT}-ok {
+      background: rgba(22, 101, 52, 0.9);
+    }
+
+    .${SCRIPT}-copy-image.${SCRIPT}-err {
+      background: rgba(153, 27, 27, 0.9);
     }
 
     .${SCRIPT}-video-wrap:hover .${SCRIPT}-video-control,
@@ -551,6 +593,187 @@
     });
   }
 
+  function isPinterestImage(img) {
+    const src = img.currentSrc || img.src || "";
+    if (!src || !/https:\/\/i\.pinimg\.com\//i.test(src)) return false;
+    if (/\/(?:30x30|75x75|140x140|170x|avatars?|rs)\b/i.test(src)) return false;
+    if (img.closest('[data-test-id*="avatar" i], [data-test-id*="profile" i]')) return false;
+    if (img.closest('[data-test-id="story-pin-video-block"]') || img.closest('[data-blended-ui-video="true"]')) return false;
+    if (img.naturalWidth && img.naturalHeight && Math.max(img.naturalWidth, img.naturalHeight) < 180) return false;
+    return true;
+  }
+
+  function imageWrapper(img) {
+    return (
+      img.closest('[data-test-id="closeup-body-image-container"]') ||
+      img.closest('[data-grid-item="true"]') ||
+      img.closest("article") ||
+      img.parentElement
+    );
+  }
+
+  function toOriginalUrl(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      if (parsed.hostname !== "i.pinimg.com") return null;
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts.length < 5) return null;
+      if (!/^\d+x$|^originals$/i.test(parts[0])) return null;
+      parts[0] = "originals";
+      parsed.pathname = `/${parts.join("/")}`;
+      parsed.search = "";
+      return parsed.href;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function imageCandidates(img) {
+    const urls = [];
+    const add = (url) => {
+      if (!url) return;
+      try {
+        const absolute = new URL(url, location.href).href;
+        const original = toOriginalUrl(absolute);
+        if (original) urls.push(original);
+        urls.push(absolute);
+      } catch (_) {}
+    };
+
+    if (img.srcset) {
+      img.srcset.split(",")
+        .map((part) => part.trim().split(/\s+/))
+        .sort((a, b) => parseInt(b[1] || "0", 10) - parseInt(a[1] || "0", 10))
+        .forEach(([url]) => add(url));
+    }
+
+    add(img.currentSrc);
+    add(img.src);
+    return [...new Set(urls)];
+  }
+
+  async function fetchImageBlob(img) {
+    let lastUrl = "";
+    for (const url of imageCandidates(img)) {
+      lastUrl = url;
+      try {
+        const response = await fetch(url, { credentials: "omit", mode: "cors" });
+        if (!response.ok) continue;
+        const blob = await response.blob();
+        if (blob.type.startsWith("image/")) return { blob, url };
+      } catch (_) {}
+    }
+    return { blob: null, url: lastUrl || img.currentSrc || img.src };
+  }
+
+  async function blobToPng(blob) {
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    context.drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((png) => {
+        if (png) resolve(png);
+        else reject(new Error("Could not convert image"));
+      }, "image/png");
+    });
+  }
+
+  async function copyText(text) {
+    if (!text) return;
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    if (typeof GM_setClipboard === "function") {
+      GM_setClipboard(text, "text");
+    }
+  }
+
+  async function copyImageToClipboard(img) {
+    const { blob, url } = await fetchImageBlob(img);
+    if (!blob) {
+      await copyText(url);
+      return "url";
+    }
+
+    if (!navigator.clipboard?.write || typeof ClipboardItem !== "function") {
+      await copyText(url);
+      return "url";
+    }
+
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+      return "image";
+    } catch (_) {
+      try {
+        const png = await blobToPng(blob);
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+        return "image";
+      } catch (__) {
+        await copyText(url);
+        return "url";
+      }
+    }
+  }
+
+  function buttonStatus(button, text, className = "") {
+    button.textContent = text;
+    button.classList.remove(`${SCRIPT}-busy`, `${SCRIPT}-ok`, `${SCRIPT}-err`);
+    if (className) button.classList.add(className);
+  }
+
+  function ensureImageCopyButton(img) {
+    if (!settings.imageCopyButtons || img.hasAttribute(COPY_READY) || !isPinterestImage(img)) return;
+    const wrapper = imageWrapper(img);
+    if (!wrapper || wrapper.querySelector(`.${SCRIPT}-copy-image`) || wrapper.querySelector("video")) return;
+
+    wrapper.classList.add(`${SCRIPT}-image-wrap`);
+    wrapper.style.position ||= "relative";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `${SCRIPT}-copy-image`;
+    button.textContent = "Copy image";
+    button.title = "Copy full-size image to clipboard";
+    button.setAttribute("aria-label", "Copy full-size image to clipboard");
+
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      buttonStatus(button, "Copying", `${SCRIPT}-busy`);
+      try {
+        const result = await copyImageToClipboard(img);
+        buttonStatus(button, result === "image" ? "Copied" : "Copied URL", `${SCRIPT}-ok`);
+      } catch (_) {
+        buttonStatus(button, "Failed", `${SCRIPT}-err`);
+      } finally {
+        window.setTimeout(() => {
+          button.disabled = false;
+          buttonStatus(button, "Copy image");
+        }, 1500);
+      }
+    }, true);
+
+    wrapper.appendChild(button);
+    img.setAttribute(COPY_READY, "true");
+  }
+
+  function processImages(root = document) {
+    if (!settings.imageCopyButtons) return;
+    if (root.matches?.("img")) ensureImageCopyButton(root);
+    root.querySelectorAll("img").forEach(ensureImageCopyButton);
+  }
+
+  function removeImageCopyButtons() {
+    document.querySelectorAll(`.${SCRIPT}-copy-image`).forEach((element) => element.remove());
+    document.querySelectorAll(`img[${COPY_READY}]`).forEach((img) => img.removeAttribute(COPY_READY));
+  }
+
   function cardFor(element) {
     return (
       element.closest('[data-grid-item="true"]') ||
@@ -692,6 +915,7 @@
         <div class="${SCRIPT}-panel-row">${makeCheckbox("blockAutoplay", "Stop autoplay")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("addVideoControls", "Volume controls")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("showVideoBadges", "Video play badges")}</div>
+        <div class="${SCRIPT}-panel-row">${makeCheckbox("imageCopyButtons", "Image copy buttons")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("hidePromoted", "Hide promoted")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("hideShopping", "Hide shopping pins")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("directPinNavigation", "Direct pin clicks")}</div>
@@ -727,6 +951,7 @@
       scanTimer = 0;
       setRootClasses();
       processVideos(document);
+      processImages(document);
       hidePromoted(document);
       renderPanel();
     }, 180);
@@ -743,7 +968,10 @@
           if (node.matches?.("video") || node.querySelector?.("video")) {
             processVideos(node);
           }
-          if (settings.hidePromoted) {
+          if (node.matches?.("img") || node.querySelector?.("img")) {
+            processImages(node);
+          }
+          if (settings.hidePromoted || settings.hideShopping) {
             hidePromoted(node);
           }
         }
