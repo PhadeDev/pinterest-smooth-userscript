@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.2
+// @version      0.1.3
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
@@ -26,6 +26,7 @@
   const SCRIPT = "psm";
   const PROCESSED = `data-${SCRIPT}-processed`;
   const AD_HIDDEN = `data-${SCRIPT}-ad-hidden`;
+  const HIDDEN_REASON = `data-${SCRIPT}-hidden-reason`;
   const USER_PLAY = `data-${SCRIPT}-user-play`;
   const CONTROL_ID = `${SCRIPT}-panel`;
 
@@ -34,6 +35,7 @@
     addVideoControls: true,
     showVideoBadges: true,
     hidePromoted: true,
+    hideShopping: true,
     directPinNavigation: true,
     reduceMotion: true,
     compactChrome: false,
@@ -78,6 +80,7 @@
     settings[key] = value;
     gmSet(key, value);
     if (key === "hidePromoted" && !value) unhidePromoted();
+    if (key === "hideShopping" && !value) unhidePromoted();
     if (key === "showVideoBadges" && !value) removeVideoBadges();
     if (key === "addVideoControls" && !value) removeVideoControls();
     queueScan();
@@ -105,7 +108,36 @@
     }
 
     [${AD_HIDDEN}="true"] {
-      display: none !important;
+      filter: grayscale(1) !important;
+      max-height: 38px !important;
+      opacity: 0.34 !important;
+      overflow: hidden !important;
+      pointer-events: none !important;
+      position: relative !important;
+    }
+
+    [${AD_HIDDEN}="true"] > * {
+      visibility: hidden !important;
+    }
+
+    [${AD_HIDDEN}="true"]::before {
+      align-items: center;
+      background: rgba(32, 35, 36, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      box-sizing: border-box;
+      color: rgba(255, 255, 255, 0.86);
+      content: attr(${HIDDEN_REASON});
+      display: flex;
+      font: 700 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      height: 30px;
+      inset: 4px;
+      justify-content: center;
+      letter-spacing: 0;
+      position: absolute;
+      text-align: center;
+      visibility: visible !important;
+      z-index: 2147482000;
     }
 
     .${SCRIPT}-video-wrap {
@@ -141,11 +173,11 @@
       display: inline-flex;
       font: 750 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       gap: 5px;
-      left: 10px;
       letter-spacing: 0;
       padding: 6px 8px;
       pointer-events: none;
       position: absolute;
+      right: 10px;
       top: 10px;
       z-index: 2147482999;
     }
@@ -536,31 +568,54 @@
       /\b(promoted by|sponsored by|paid partnership|ad by)\b/i.test(text);
   }
 
-  function hidePromoted(root = document) {
-    if (!settings.hidePromoted) return;
+  function hasShoppingText(element) {
+    const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) return false;
+    return /^visit site$/i.test(text) ||
+      /\b(etsy|shop now|buy now|sponsored result|product pin)\b/i.test(text);
+  }
 
-    const candidates = new Set();
-    root.querySelectorAll(
-      [
-        '[aria-label*="Promoted" i]',
-        '[aria-label*="Sponsored" i]',
-        '[title*="Promoted" i]',
-        '[title*="Sponsored" i]',
-        'a[href*="/ads/"]',
-        'a[href*="adclick"]',
-        'a[href*="promoted"]',
-        'a[href*="utm_campaign"]',
-      ].join(","),
-    ).forEach((element) => candidates.add(element));
+  function hidePromoted(root = document) {
+    if (!settings.hidePromoted && !settings.hideShopping) return;
+
+    const candidates = new Map();
+    if (settings.hidePromoted) {
+      root.querySelectorAll(
+        [
+          '[aria-label*="Promoted" i]',
+          '[aria-label*="Sponsored" i]',
+          '[title*="Promoted" i]',
+          '[title*="Sponsored" i]',
+          'a[href*="/ads/"]',
+          'a[href*="adclick"]',
+          'a[href*="promoted"]',
+          'a[href*="utm_campaign"]',
+        ].join(","),
+      ).forEach((element) => candidates.set(element, "Hidden promoted pin"));
+    }
+
+    if (settings.hideShopping) {
+      root.querySelectorAll(
+        [
+          'a[href*="etsy.com" i]',
+          'a[href*="/shop/" i]',
+          'a[href*="shop?" i]',
+          '[aria-label="Visit site" i]',
+          '[title="Visit site" i]',
+        ].join(","),
+      ).forEach((element) => candidates.set(element, "Hidden shopping pin"));
+    }
 
     root.querySelectorAll('[data-grid-item="true"] [aria-label], [data-grid-item="true"] [title], [data-grid-item="true"] span, [data-grid-item="true"] div').forEach((element) => {
-      if (hasAdText(element)) candidates.add(element);
+      if (settings.hidePromoted && hasAdText(element)) candidates.set(element, "Hidden promoted pin");
+      if (settings.hideShopping && hasShoppingText(element)) candidates.set(element, "Hidden shopping pin");
     });
 
-    candidates.forEach((element) => {
+    candidates.forEach((reason, element) => {
       const card = cardFor(element) || element;
       if (card && card !== document.body && card !== document.documentElement) {
         card.setAttribute(AD_HIDDEN, "true");
+        card.setAttribute(HIDDEN_REASON, reason);
       }
     });
   }
@@ -568,6 +623,7 @@
   function unhidePromoted() {
     document.querySelectorAll(`[${AD_HIDDEN}="true"]`).forEach((element) => {
       element.removeAttribute(AD_HIDDEN);
+      element.removeAttribute(HIDDEN_REASON);
     });
   }
 
@@ -637,6 +693,7 @@
         <div class="${SCRIPT}-panel-row">${makeCheckbox("addVideoControls", "Volume controls")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("showVideoBadges", "Video play badges")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("hidePromoted", "Hide promoted")}</div>
+        <div class="${SCRIPT}-panel-row">${makeCheckbox("hideShopping", "Hide shopping pins")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("directPinNavigation", "Direct pin clicks")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("reduceMotion", "Reduce motion")}</div>
         <div class="${SCRIPT}-panel-row">${makeCheckbox("compactChrome", "Less page clutter")}</div>
