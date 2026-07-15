@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pinterest Smooth
 // @namespace    local.pinterest.smooth
-// @version      0.1.1
+// @version      0.1.2
 // @description  Stop Pinterest autoplay, add real video volume controls, hide promoted clutter, and make browsing less jumpy.
 // @match        https://www.pinterest.com/*
 // @match        https://www.pinterest.co.uk/*
@@ -44,7 +44,7 @@
   const settings = loadSettings();
   const userIntent = new WeakSet();
   let observer = null;
-  let scanQueued = false;
+  let scanTimer = 0;
 
   function gmGet(key, fallback) {
     try {
@@ -355,15 +355,25 @@
 
   function hardStopVideo(video) {
     video.autoplay = false;
-    video.defaultMuted = true;
-    video.muted = true;
     video.preload = "metadata";
     video.removeAttribute("autoplay");
     video.removeAttribute("data-autoplay");
 
-    if (!userIntent.has(video) && !video.paused) {
+    if (!userIntent.has(video) && video.getAttribute(USER_PLAY) !== "true") {
+      video.defaultMuted = true;
+      video.muted = true;
+    }
+
+    if (!userIntent.has(video) && video.getAttribute(USER_PLAY) !== "true" && !video.paused) {
       video.pause();
     }
+  }
+
+  function applyUserVolume(video, volumeValue = settings.defaultVolume) {
+    const volume = clampVolume(volumeValue);
+    video.volume = volume / 100;
+    video.muted = volume === 0;
+    video.defaultMuted = volume === 0;
   }
 
   function ensureVideoControl(video) {
@@ -399,9 +409,10 @@
       event.stopPropagation();
       markUserIntent(video);
       if (video.paused) {
-        video.muted = Number(slider.value) === 0;
-        video.volume = clampVolume(slider.value) / 100;
+        applyUserVolume(video, slider.value);
         video.play().catch(() => {});
+        setTimeout(() => applyUserVolume(video, slider.value), 80);
+        setTimeout(() => applyUserVolume(video, slider.value), 350);
       } else {
         video.pause();
       }
@@ -413,7 +424,7 @@
       event.stopPropagation();
       markUserIntent(video);
       video.muted = !video.muted;
-      if (!video.muted && video.volume === 0) video.volume = clampVolume(settings.defaultVolume) / 100;
+      if (!video.muted && video.volume === 0) applyUserVolume(video, settings.defaultVolume);
       sync();
     }, true);
 
@@ -422,8 +433,7 @@
       markUserIntent(video);
       const volume = clampVolume(slider.value);
       saveSetting("defaultVolume", volume);
-      video.volume = volume / 100;
-      video.muted = volume === 0;
+      applyUserVolume(video, volume);
       sync();
     });
 
@@ -465,9 +475,10 @@
       event.stopPropagation();
       markUserIntent(video);
       if (video.paused || video.ended) {
-        video.volume = clampVolume(settings.defaultVolume) / 100;
-        video.muted = video.volume === 0;
+        applyUserVolume(video, settings.defaultVolume);
         video.play().catch(() => {});
+        setTimeout(() => applyUserVolume(video, settings.defaultVolume), 80);
+        setTimeout(() => applyUserVolume(video, settings.defaultVolume), 350);
       } else {
         video.pause();
       }
@@ -521,12 +532,8 @@
   function hasAdText(element) {
     const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
     if (!text) return false;
-    return /\b(promoted|sponsored|advertisement|ad by|paid partnership|shop now)\b/i.test(text);
-  }
-
-  function hasAdMetadata(element) {
-    const html = element.outerHTML || "";
-    return /"is_ad"\s*:\s*true|"is_promoted"\s*:\s*true|"promoted_is_lead_ad"\s*:\s*true|promoter|ad_destination|sponsor/i.test(html);
+    return /^(promoted|sponsored|advertisement)$/i.test(text) ||
+      /\b(promoted by|sponsored by|paid partnership|ad by)\b/i.test(text);
   }
 
   function hidePromoted(root = document) {
@@ -542,13 +549,12 @@
         'a[href*="/ads/"]',
         'a[href*="adclick"]',
         'a[href*="promoted"]',
-        'a[href*="epik="]',
         'a[href*="utm_campaign"]',
       ].join(","),
     ).forEach((element) => candidates.add(element));
 
-    root.querySelectorAll('[data-grid-item="true"], [role="listitem"], article, section').forEach((element) => {
-      if (hasAdText(element) || hasAdMetadata(element)) candidates.add(element);
+    root.querySelectorAll('[data-grid-item="true"] [aria-label], [data-grid-item="true"] [title], [data-grid-item="true"] span, [data-grid-item="true"] div').forEach((element) => {
+      if (hasAdText(element)) candidates.add(element);
     });
 
     candidates.forEach((element) => {
@@ -659,23 +665,24 @@
   }
 
   function queueScan() {
-    if (scanQueued) return;
-    scanQueued = true;
-    requestAnimationFrame(() => {
-      scanQueued = false;
+    if (scanTimer) return;
+    scanTimer = window.setTimeout(() => {
+      scanTimer = 0;
       setRootClasses();
       processVideos(document);
       hidePromoted(document);
       renderPanel();
-    });
+    }, 180);
   }
 
   function startObserver() {
     if (observer || !document.documentElement) return;
     observer = new MutationObserver((mutations) => {
+      let sawUsefulNode = false;
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          sawUsefulNode = true;
           if (node.matches?.("video") || node.querySelector?.("video")) {
             processVideos(node);
           }
@@ -684,7 +691,7 @@
           }
         }
       }
-      queueScan();
+      if (sawUsefulNode) queueScan();
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
   }
